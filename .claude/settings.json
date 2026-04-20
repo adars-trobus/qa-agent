@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv:*)",
+      "Bash(yarn:*)",
+      "Bash(npx playwright:*)",
+      "Bash(cd backend && uv:*)",
+      "Bash(cd frontend && yarn:*)",
+      "Bash(curl:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(test:*)",
+      "Bash(grep:*)",
+      "Bash(rm backend/tasks.db)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push:*)"
+    ]
+  }
+}
