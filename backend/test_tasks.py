@@ -331,6 +331,50 @@ def test_delete_then_delete_again_returns_404(client):
     assert resp2.status_code == 404
 
 
+# --- Get single task ---
+
+
+def test_get_task_returns_correct_fields(client):
+    created = client.post("/tasks", json={
+        "title": "read book",
+        "description": "Read chapter 5",
+        "priority": "high",
+        "due_date": "2026-05-10",
+    }).json()
+    task_id = created["id"]
+
+    resp = client.get(f"/tasks/{task_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["id"] == task_id
+    assert body["title"] == "read book"
+    assert body["description"] == "Read chapter 5"
+    assert body["priority"] == "high"
+    assert body["due_date"] == "2026-05-10"
+    assert body["done"] is False
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_get_task_not_found(client):
+    resp = client.get("/tasks/9999")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Task not found"}
+
+
+def test_get_task_negative_id_not_found(client):
+    resp = client.get("/tasks/-1")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Task not found"}
+
+
+def test_get_task_very_large_id_not_found(client):
+    resp = client.get("/tasks/999999999")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Task not found"}
+
+
 # --- Full lifecycle ---
 
 
