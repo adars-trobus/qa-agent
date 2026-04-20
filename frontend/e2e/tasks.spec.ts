@@ -235,6 +235,73 @@ test("sort order toggle works", async ({ page, request }) => {
   await expect(sortButton).toContainText("Ascending");
 });
 
+// --- Task Detail Modal ---
+
+test("clicking view opens the task detail modal and shows task fields", async ({
+  page,
+  request,
+}) => {
+  const task = await (
+    await request.post(`${API}/tasks`, {
+      data: { title: "modal test task", priority: "high" },
+    })
+  ).json();
+
+  await page.goto("/");
+
+  // The view button is per-task
+  await page.getByTestId(`view-${task.id}`).click();
+
+  // Modal should appear
+  const modal = page.getByTestId("task-detail-modal");
+  await expect(modal).toBeVisible();
+
+  // Detail body with task fields
+  await expect(page.getByTestId("detail-body")).toBeVisible();
+  await expect(page.getByTestId("detail-title")).toContainText("modal test task");
+  await expect(page.getByTestId("detail-priority")).toContainText("high");
+  await expect(page.getByTestId("detail-status")).toContainText("Active");
+});
+
+test("close button hides the task detail modal", async ({
+  page,
+  request,
+}) => {
+  const task = await (
+    await request.post(`${API}/tasks`, {
+      data: { title: "close button task" },
+    })
+  ).json();
+
+  await page.goto("/");
+  await page.getByTestId(`view-${task.id}`).click();
+  await expect(page.getByTestId("task-detail-modal")).toBeVisible();
+
+  // Click the close button
+  await page.getByTestId("close-detail").click();
+  await expect(page.getByTestId("task-detail-modal")).not.toBeAttached();
+});
+
+test("clicking the backdrop hides the task detail modal", async ({
+  page,
+  request,
+}) => {
+  const task = await (
+    await request.post(`${API}/tasks`, {
+      data: { title: "backdrop close task" },
+    })
+  ).json();
+
+  await page.goto("/");
+  await page.getByTestId(`view-${task.id}`).click();
+  await expect(page.getByTestId("task-detail-modal")).toBeVisible();
+
+  // Click on the backdrop (the fixed overlay itself, not the inner card)
+  // The modal div covers the viewport; clicking at (0,0) hits the backdrop
+  await page.getByTestId("task-detail-modal").click({ position: { x: 5, y: 5 } });
+  await expect(page.getByTestId("task-detail-modal")).not.toBeAttached();
+});
+
 // --- XSS ---
 
 test("special characters render as text not HTML", async ({ page }) => {
