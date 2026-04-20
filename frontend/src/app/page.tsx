@@ -90,6 +90,34 @@ export default function Home() {
   // Expanded task descriptions
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
 
+  // Task detail modal — fetched fresh via GET /tasks/{id}
+  const [viewingTask, setViewingTask] = useState<Task | null>(null);
+  const [viewingLoading, setViewingLoading] = useState(false);
+  const [viewingError, setViewingError] = useState<string | null>(null);
+
+  async function viewTask(taskId: number) {
+    setViewingTask(null);
+    setViewingError(null);
+    setViewingLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/tasks/${taskId}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`GET /tasks/${taskId} ${res.status}`);
+      setViewingTask(await res.json());
+    } catch (e) {
+      setViewingError((e as Error).message);
+    } finally {
+      setViewingLoading(false);
+    }
+  }
+
+  function closeViewing() {
+    setViewingTask(null);
+    setViewingError(null);
+    setViewingLoading(false);
+  }
+
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/tasks/stats`, { cache: "no-store" });
@@ -542,6 +570,14 @@ export default function Home() {
                     </div>
                     <div className="flex items-center gap-1">
                       <button
+                        aria-label={`view ${task.title}`}
+                        data-testid={`view-${task.id}`}
+                        onClick={() => viewTask(task.id)}
+                        className="rounded p-1 text-xs text-zinc-400 hover:text-emerald-600"
+                      >
+                        view
+                      </button>
+                      <button
                         aria-label={`edit ${task.title}`}
                         data-testid={`edit-${task.id}`}
                         onClick={() => startEdit(task)}
@@ -564,6 +600,119 @@ export default function Home() {
             </li>
           ))}
         </ul>
+      )}
+
+      {(viewingTask || viewingLoading || viewingError) && (
+        <div
+          data-testid="task-detail-modal"
+          role="dialog"
+          aria-label="task details"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeViewing}
+        >
+          <div
+            className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-zinc-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <h2 className="text-lg font-semibold">Task details</h2>
+              <button
+                aria-label="close details"
+                data-testid="close-detail"
+                onClick={closeViewing}
+                className="rounded p-1 text-zinc-400 hover:text-zinc-700"
+              >
+                ×
+              </button>
+            </div>
+
+            {viewingLoading && (
+              <p data-testid="detail-loading" className="text-sm text-zinc-500">
+                Loading…
+              </p>
+            )}
+
+            {viewingError && (
+              <p data-testid="detail-error" className="text-sm text-red-600">
+                {viewingError}
+              </p>
+            )}
+
+            {viewingTask && (
+              <dl className="space-y-3 text-sm" data-testid="detail-body">
+                <div>
+                  <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                    Title
+                  </dt>
+                  <dd data-testid="detail-title" className="mt-0.5">
+                    {viewingTask.title}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                    Description
+                  </dt>
+                  <dd data-testid="detail-description" className="mt-0.5">
+                    {viewingTask.description || (
+                      <span className="text-zinc-400">None</span>
+                    )}
+                  </dd>
+                </div>
+                <div className="flex gap-6">
+                  <div>
+                    <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                      Priority
+                    </dt>
+                    <dd
+                      data-testid="detail-priority"
+                      className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${PRIORITY_COLORS[viewingTask.priority]}`}
+                    >
+                      {viewingTask.priority}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                      Status
+                    </dt>
+                    <dd data-testid="detail-status" className="mt-0.5">
+                      {viewingTask.done ? "Completed" : "Active"}
+                    </dd>
+                  </div>
+                </div>
+                <div>
+                  <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                    Due date
+                  </dt>
+                  <dd data-testid="detail-due-date" className="mt-0.5">
+                    {viewingTask.due_date ? (
+                      formatDate(viewingTask.due_date)
+                    ) : (
+                      <span className="text-zinc-400">None</span>
+                    )}
+                  </dd>
+                </div>
+                <div className="flex gap-6">
+                  <div>
+                    <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                      Created
+                    </dt>
+                    <dd data-testid="detail-created-at" className="mt-0.5">
+                      {timeAgo(viewingTask.created_at)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-[11px] font-semibold uppercase text-zinc-400">
+                      Updated
+                    </dt>
+                    <dd data-testid="detail-updated-at" className="mt-0.5">
+                      {timeAgo(viewingTask.updated_at)}
+                    </dd>
+                  </div>
+                </div>
+              </dl>
+            )}
+          </div>
+        </div>
       )}
     </main>
   );
