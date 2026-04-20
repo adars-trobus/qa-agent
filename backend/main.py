@@ -150,6 +150,14 @@ def task_stats(session: SessionDep):
     )
 
 
+@app.get("/tasks/{task_id}", response_model=TaskRead)
+def get_task(task_id: int, session: SessionDep):
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
 @app.post("/tasks", response_model=TaskRead, status_code=201)
 def create_task(payload: TaskCreate, session: SessionDep):
     if not payload.title.strip():
