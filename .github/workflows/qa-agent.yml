@@ -1,0 +1,164 @@
+name: QA Agent
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - ".claude/**"
+      - ".mcp.json"
+      - ".github/workflows/qa-agent.yml"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: qa-agent-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    # Don't recurse: skip PRs opened by the agent itself.
+    if: ${{ !startsWith(github.head_ref, 'qa/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "qa-agent[bot]"
+          git config user.email "qa-agent@users.noreply.github.com"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Install backend deps
+        working-directory: backend
+        run: uv sync
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/yarn.lock') }}
+
+      - name: Install Playwright chromium (with system deps)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        working-directory: frontend
+        run: yarn playwright install --with-deps chromium
+
+      - name: Ensure Playwright system deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        working-directory: frontend
+        run: yarn playwright install-deps chromium
+
+      - name: Run QA agent
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_SHORT_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --max-turns 25
+            --mcp-config .mcp.json
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task,mcp__playwright__browser_navigate,mcp__playwright__browser_click,mcp__playwright__browser_type,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_wait_for,mcp__playwright__browser_evaluate,mcp__playwright__browser_close,mcp__playwright__browser_console_messages,mcp__playwright__browser_network_requests"
+          prompt: |
+            You are the QA orchestrator running in CI for PR #${{ env.PR_NUMBER }} on repo ${{ env.REPO_FULL_NAME }}.
+
+            ## Context
+
+            - PR URL: ${{ env.PR_URL }}
+            - PR title: ${{ env.PR_TITLE }}
+            - Head ref: ${{ env.PR_HEAD_REF }}  (sha ${{ env.PR_HEAD_SHA }})
+            - Base: main (sha ${{ env.PR_BASE_SHA }})
+            - Working tree is already checked out at the PR head. Dependencies (yarn, uv, playwright chromium) are installed.
+
+            ## Mission
+
+            1. Figure out what changed:
+               `git diff --name-only $PR_BASE_SHA...$PR_HEAD_SHA`
+               Categorise changed paths into **backend** (`backend/**`) and **frontend** (`frontend/**`). Ignore changes under `.claude/`, `tasks/`, `.github/` — they are infrastructure, not product code.
+
+            2. Delegate to the appropriate subagent via the Task tool, one at a time:
+               - Backend changes → invoke subagent `qa-backend` with a prompt listing the changed backend files and what the PR title says the change is about.
+               - Frontend changes → invoke subagent `qa-frontend` with the same shape for frontend files.
+               Each subagent writes/updates tests, runs them, and fixes either the test or the source until the suite is fully green. They know their own workflow — do not micromanage, but make sure they actually ran tests to a final green state.
+
+            3. After subagents finish, check `git status` to see what changed. Three cases:
+
+               **(a) No file changes.** Existing tests already cover the diff. Post a comment on the original PR and stop:
+               `gh pr comment $PR_NUMBER --body "🤖 **QA agent**: analysed this PR, existing coverage is sufficient — no test changes needed."`
+
+               **(b) Changes made and tests are green.** Create a companion branch and draft PR **targeting the feature branch** (not main) so the tests travel with the feature:
+               ```
+               BRANCH="qa/$(echo $PR_HEAD_SHA | cut -c1-7)"
+               git checkout -b "$BRANCH"
+               git add -A
+               git commit -m "qa: tests for PR #$PR_NUMBER"
+               git push origin "$BRANCH"
+               COMPANION_URL=$(gh pr create --draft --base "$PR_HEAD_REF" --head "$BRANCH" \
+                 --title "qa: tests for PR #$PR_NUMBER" \
+                 --body "Auto-generated by QA agent. Merge into \`$PR_HEAD_REF\` so the tests land with the feature.
+
+               Companion to #$PR_NUMBER — ${{ env.PR_TITLE }}
+
+               ## Summary
+               <one-paragraph summary of what the subagents did>
+
+               ## Test results
+               - Backend: <pytest summary>
+               - Frontend: <playwright summary>")
+               gh pr comment $PR_NUMBER --body "🤖 **QA agent** opened companion PR with test changes (merges into this branch): $COMPANION_URL"
+               ```
+
+               **(c) Changes made but tests could NOT reach green within the turn budget.** Still push the branch so humans can see what you tried, targeting the feature branch the same way:
+               ```
+               BRANCH="qa/$(echo $PR_HEAD_SHA | cut -c1-7)"
+               git checkout -b "$BRANCH"
+               git add -A
+               git commit -m "qa: WIP — could not reach green for PR #$PR_NUMBER"
+               git push origin "$BRANCH"
+               COMPANION_URL=$(gh pr create --draft --base "$PR_HEAD_REF" --head "$BRANCH" \
+                 --title "⚠️ qa: WIP tests for PR #$PR_NUMBER (not green)" \
+                 --body "QA agent ran out of turns before reaching green. See body for what was tried and what's still failing.")
+               gh pr comment $PR_NUMBER --body "⚠️ **QA agent** could not reach green — draft companion: $COMPANION_URL"
+               ```
+
+            ## Rules (hard limits)
+
+            - Never push to `main`, never merge any PR, never force-push.
+            - Only modify files under `backend/`, `frontend/`, and `tasks/lessons.md`. Do **not** touch `.claude/`, `.github/`, `CLAUDE.md`, or dependency lockfiles unless a test genuinely requires it — if it does, explain why in the companion PR body.
+            - Every case (a/b/c) MUST end with a `gh pr comment` on PR #$PR_NUMBER so the human sees a result. Silent exit = failure.
+            - No `git push --force`. No `gh pr merge`. No `gh auth` commands.
