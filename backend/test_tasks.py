@@ -308,6 +308,64 @@ def test_stats_completed_task_not_overdue(client):
     assert stats["overdue"] == 0
 
 
+# --- Get single task ---
+
+
+def test_get_task_happy_path(client):
+    created = client.post("/tasks", json={
+        "title": "specific task",
+        "description": "detailed desc",
+        "priority": "high",
+        "due_date": "2026-05-10",
+    }).json()
+    task_id = created["id"]
+
+    resp = client.get(f"/tasks/{task_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == task_id
+    assert body["title"] == "specific task"
+    assert body["description"] == "detailed desc"
+    assert body["priority"] == "high"
+    assert body["due_date"] == "2026-05-10"
+    assert body["done"] is False
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_get_task_not_found(client):
+    resp = client.get("/tasks/9999")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Task not found"
+
+
+def test_get_task_reflects_updates(client):
+    created = client.post("/tasks", json={"title": "before update"}).json()
+    task_id = created["id"]
+
+    client.patch(f"/tasks/{task_id}", json={"title": "after update", "done": True})
+
+    resp = client.get(f"/tasks/{task_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == "after update"
+    assert body["done"] is True
+
+
+def test_get_task_after_delete_returns_404(client):
+    created = client.post("/tasks", json={"title": "to be deleted"}).json()
+    task_id = created["id"]
+    client.delete(f"/tasks/{task_id}")
+
+    resp = client.get(f"/tasks/{task_id}")
+    assert resp.status_code == 404
+
+
+def test_get_task_non_integer_id_returns_422(client):
+    resp = client.get("/tasks/not-an-id")
+    assert resp.status_code == 422
+
+
 # --- Delete ---
 
 
