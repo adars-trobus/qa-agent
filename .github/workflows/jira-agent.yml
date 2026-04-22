@@ -2,13 +2,104 @@ name: Jira Agent
 
 on:
   repository_dispatch:
-    types: [jira-epic-created, jira-epic-approved, jira-epic-refine]
+    types:
+      - jira-epic-created
+      - jira-epic-approved
+      - jira-epic-refine
+      - confluence-page-triaged
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
+  confluence-triage:
+    if: github.event.action == 'confluence-page-triaged'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run Confluence triage agent
+        uses: anthropics/claude-code-action@v1
+        env:
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USERNAME: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          CONFLUENCE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+          CONFLUENCE_USERNAME: ${{ secrets.JIRA_USER_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PAGE_ID: ${{ github.event.client_payload.page_id }}
+          PAGE_TITLE: ${{ github.event.client_payload.page_title }}
+          PAGE_URL: ${{ github.event.client_payload.page_url }}
+          SPACE_KEY: ${{ github.event.client_payload.space_key }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --max-turns 25
+            --mcp-config .claude/mcp-jira.json
+            --allowedTools "Bash,Read,Task,mcp__atlassian"
+          prompt: |
+            You are the Confluence Triage Agent. A BA labeled a Confluence page `needs-triage`, meaning it's ready to become a tracked Epic.
+
+            ## Context
+            - Confluence page ID: ${{ github.event.client_payload.page_id }}
+            - Page title: ${{ github.event.client_payload.page_title }}
+            - Page URL: ${{ github.event.client_payload.page_url }}
+            - Space key: ${{ github.event.client_payload.space_key }}
+            - Jira target project: `QAT`
+            - Atlassian MCP is available (tools prefixed `mcp__atlassian__`). It can read both Jira and Confluence — credentials for both are passed via env.
+
+            ## Mission
+
+            1. **Fetch the Confluence page content** via the MCP. Extract the rendered page body (the actual requirements text, not just metadata). Ignore template boilerplate.
+
+            2. **Idempotency check.** Search Jira for an existing Epic in project QAT whose description contains `Confluence Page ID: $PAGE_ID`. If one exists:
+               - Post a comment on that existing Epic: "Confluence page re-labeled for triage — already tracked by this Epic. Re-run `refine:` comment here if requirements changed."
+               - Exit cleanly. **Do not create a duplicate Epic.**
+
+            3. **Guard against empty pages.** If the page body is essentially empty (< 30 words excluding the title) or contains only Confluence template placeholders, post a comment ON THE CONFLUENCE PAGE saying "Cannot triage — page has no requirements content. Please add detail and re-label." and exit.
+
+            4. **Create a new Jira Epic in QAT** via the MCP with these fields:
+               - Project: `QAT`
+               - Issue type: `Epic`
+               - Summary: use the page title verbatim
+               - Description (this EXACT format — the markers matter for downstream rules):
+                 ```
+                 [Confluence-sourced]
+
+                 **Source**: ${{ github.event.client_payload.page_url }}
+                 **Confluence Page ID**: ${{ github.event.client_payload.page_id }}
+                 **Triaged at**: <ISO timestamp>
+
+                 ---
+
+                 <Copy/paraphrase the key requirements from the Confluence page here — 1–3 short paragraphs, preserving acceptance criteria and scope callouts. Do not include template scaffolding like "Participants" or "Date" sections from a meeting-notes template if present; extract only the substantive requirements.>
+                 ```
+
+               The `[Confluence-sourced]` marker on the first line is load-bearing — it prevents Rule A from double-triaging this Epic.
+
+               Capture the new Epic key (e.g. `QAT-7`) from the create response.
+
+            5. **Run the standard triage flow on the new Epic.** Same behaviour as the regular `jira-epic-created` path:
+               - Analyze the requirement (type of change, schema impact, UI impact, risk signals)
+               - Draft 3 tailored sub-task proposals (Dev Review / QA Validation / Data Schema Review) — same format rules
+               - If no data impact is apparent, say so explicitly in the Data Schema Review section — don't invent work
+               - Post ONE comment on the new Epic using the exact `🤖 **QA Agent proposal**` format used elsewhere
+
+            6. **Back-link the Epic on the Confluence page.** Add a comment on the Confluence page: "Triaged — see Jira Epic `<NEW_EPIC_KEY>`" with a link to the Jira Epic. This closes the loop so BAs can navigate either direction.
+
+            ## Hard rules
+            - Never modify repo files, never use git/gh.
+            - Don't create sub-tasks in this job — only the Epic and the proposal comment. A BA has to reply `approve` on the Epic to create sub-tasks.
+            - If any API call fails, log the error clearly and exit non-zero.
+            - If you can't determine whether an Epic already exists (search failed), err on the side of NOT creating a new one — post a failure comment on the Confluence page asking a human to check.
+
   triage:
     if: github.event.action == 'jira-epic-created'
     runs-on: ubuntu-latest
